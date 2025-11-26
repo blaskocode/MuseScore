@@ -44,14 +44,15 @@ using namespace muse::async;
 TranslatableString nameOfNoteInputMethod(NoteInputMethod method)
 {
     switch (method) {
-    case NoteInputMethod::UNKNOWN:          break;
-    case NoteInputMethod::BY_NOTE_NAME:     return TranslatableString("noteInputMethod", "Input by note name mode");
-    case NoteInputMethod::BY_DURATION:      return TranslatableString("noteInputMethod", "Input by duration mode");
-    case NoteInputMethod::REPITCH:          return TranslatableString("noteInputMethod", "Re-pitch existing notes mode");
-    case NoteInputMethod::RHYTHM:           return TranslatableString("noteInputMethod", "Rhythm-only input mode");
-    case NoteInputMethod::REALTIME_AUTO:    return TranslatableString("noteInputMethod", "Metronome real-time input mode");
-    case NoteInputMethod::REALTIME_MANUAL:  return TranslatableString("noteInputMethod", "Pedal real-time input mode");
-    case NoteInputMethod::TIMEWISE:         return TranslatableString("noteInputMethod", "Insert mode (grow measures)");
+    case NoteInputMethod::UNKNOWN:            break;
+    case NoteInputMethod::BY_NOTE_NAME:       return TranslatableString("noteInputMethod", "Input by note name mode");
+    case NoteInputMethod::BY_DURATION:        return TranslatableString("noteInputMethod", "Input by duration mode");
+    case NoteInputMethod::REPITCH:            return TranslatableString("noteInputMethod", "Re-pitch existing notes mode");
+    case NoteInputMethod::RHYTHM:             return TranslatableString("noteInputMethod", "Rhythm-only input mode");
+    case NoteInputMethod::REALTIME_AUTO:      return TranslatableString("noteInputMethod", "Metronome real-time input mode");
+    case NoteInputMethod::REALTIME_MANUAL:    return TranslatableString("noteInputMethod", "Pedal real-time input mode");
+    case NoteInputMethod::REALTIME_QUANTIZED: return TranslatableString("noteInputMethod", "Real-time quantized input mode");
+    case NoteInputMethod::TIMEWISE:           return TranslatableString("noteInputMethod", "Insert mode (grow measures)");
         // No default case. We want a compiler warning if an enum value is not handled here.
     }
 

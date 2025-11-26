@@ -33,6 +33,15 @@
 #include "global/globaltypes.h"
 
 namespace mu::notation {
+
+// Quantization grid for REALTIME_QUANTIZED mode
+enum class QuantizationGrid {
+    QUARTER = 4,
+    EIGHTH = 8,
+    SIXTEENTH = 16,
+    THIRTY_SECOND = 32
+};
+
 class INotationConfiguration : MODULE_EXPORT_INTERFACE
 {
     INTERFACE_ID(INotationConfiguration)
@@ -215,6 +224,16 @@ public:
     virtual int notePlayDurationMilliseconds() const = 0;
     virtual void setNotePlayDurationMilliseconds(int durationMs) = 0;
     virtual muse::async::Channel<int> notePlayDurationMillisecondsChanged() const = 0;
+
+    // Quantization settings for REALTIME_QUANTIZED mode
+    virtual QuantizationGrid quantizationGrid() const = 0;
+    virtual void setQuantizationGrid(QuantizationGrid grid) = 0;
+    virtual muse::async::Channel<QuantizationGrid> quantizationGridChanged() const = 0;
+
+    // Recording tempo (BPM) - 0 means use score tempo
+    virtual int recordingTempo() const = 0;
+    virtual void setRecordingTempo(int bpm) = 0;
+    virtual muse::async::Channel<int> recordingTempoChanged() const = 0;
 
     virtual void setTemplateModeEnabled(std::optional<bool> enabled) = 0;
     virtual void setTestModeEnabled(std::optional<bool> enabled) = 0;

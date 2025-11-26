@@ -220,6 +220,14 @@ public:
     void setNotePlayDurationMilliseconds(int durationMs) override;
     muse::async::Channel<int> notePlayDurationMillisecondsChanged() const override;
 
+    QuantizationGrid quantizationGrid() const override;
+    void setQuantizationGrid(QuantizationGrid grid) override;
+    muse::async::Channel<QuantizationGrid> quantizationGridChanged() const override;
+
+    int recordingTempo() const override;
+    void setRecordingTempo(int bpm) override;
+    muse::async::Channel<int> recordingTempoChanged() const override;
+
     void setTemplateModeEnabled(std::optional<bool> enabled) override;
     void setTestModeEnabled(std::optional<bool> enabled) override;
 
@@ -318,6 +326,8 @@ private:
     muse::async::Channel<int> m_delayBetweenNotesInRealTimeModeMillisecondsChanged;
     muse::async::Channel<int> m_notePlayDurationMillisecondsChanged;
     muse::async::Channel<bool> m_useMidiVelocityAndDurationDuringNoteInputChanged;
+    muse::async::Channel<QuantizationGrid> m_quantizationGridChanged;
+    muse::async::Channel<int> m_recordingTempoChanged;
     muse::async::Channel<std::string> m_styleFileImportPathChanged;
     muse::async::Notification m_isPlayRepeatsChanged;
     muse::async::Notification m_isPlayChordSymbolsChanged;

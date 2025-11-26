@@ -28,9 +28,15 @@
 #include "engraving/dom/tie.h"
 #include "engraving/dom/score.h"
 #include "engraving/dom/note.h"
+#include "engraving/dom/chord.h"
+#include "engraving/dom/rest.h"
 #include "engraving/dom/factory.h"
+#include "engraving/dom/sig.h"
+#include "engraving/dom/tempo.h"
+#include "engraving/dom/measure.h"
 
 #include "notationtypes.h"
+#include "notequantizer.h"
 
 #include "defer.h"
 #include "log.h"
@@ -73,6 +79,24 @@ NotationMidiInput::NotationMidiInput(IGetScore* getScore, INotationInteractionPt
     m_extendNoteTimer.setTimerType(Qt::PreciseTimer);
     m_extendNoteTimer.setSingleShot(true);
     QObject::connect(&m_extendNoteTimer, &QTimer::timeout, [this]() { doExtendCurrentNote(); });
+
+    // Initialize recording clock
+    m_recordingClock = std::make_unique<RecordingClock>();
+
+    m_recordingClock->metronomeClick().onReceive(this, [this](int tick) {
+        onRecordingMetronomeClick(tick);
+    });
+
+    m_recordingClock->beatChanged().onReceive(this, [this](int beat) {
+        onRecordingBeatChanged(beat);
+    });
+
+    // Initialize keyboard chord detection timer
+    m_keyboardChordTimer.setSingleShot(true);
+    m_keyboardChordTimer.setInterval(KEYBOARD_CHORD_WINDOW_MS);
+    QObject::connect(&m_keyboardChordTimer, &QTimer::timeout, [this]() {
+        processKeyboardChordBuffer();
+    });
 }
 
 void NotationMidiInput::onMidiEventReceived(const muse::midi::Event& event)
@@ -94,7 +118,22 @@ void NotationMidiInput::onMidiEventReceived(const muse::midi::Event& event)
     };
 
     if (muse::contains(ACCEPTED_OPCODES, event.opcode())) {
-        m_eventsQueue.push_back(event);
+        // Capture tick timestamp at arrival time for quantized recording
+        int tickTimestamp = 0;
+        if (m_isQuantizedRecording && m_recordingClock && m_recordingClock->isRunning()) {
+            tickTimestamp = m_recordingClock->currentTick();
+            LOGD() << "MIDI event arrived: opcode=" << static_cast<int>(event.opcode())
+                   << " note=" << event.note() << " tickTimestamp=" << tickTimestamp
+                   << " elapsedMs=" << m_recordingClock->elapsedMs();
+
+            // NOTE: Audio preview during quantized recording is intentionally disabled.
+            // MuseScore's audio pipeline has ~30-50ms latency which makes real-time
+            // monitoring unusable for recording. Users should use external MIDI monitoring
+            // (their keyboard's built-in sounds, a DAW, or standalone synth software)
+            // for low-latency audio feedback during recording.
+        }
+
+        m_eventsQueue.push_back({ event, tickTimestamp });
 
         if (!m_processTimer.isActive()) {
             m_processTimer.start(PROCESS_INTERVAL);
@@ -167,10 +206,27 @@ void NotationMidiInput::doProcessEvents()
         return;
     }
 
+    // Route to quantized recording if active
+    if (m_isQuantizedRecording && m_recordingClock && m_recordingClock->isRunning()) {
+        for (const TimestampedMidiEvent& timestampedEvent : m_eventsQueue) {
+            const muse::midi::Event& event = timestampedEvent.event;
+            int tick = timestampedEvent.tickTimestamp;
+            const muse::midi::Event::Opcode opcode = event.opcode();
+
+            if (opcode == muse::midi::Event::Opcode::NoteOn && event.velocity7() > 0) {
+                bufferNoteOn(event.note(), event.velocity7(), tick);
+            } else if (opcode == muse::midi::Event::Opcode::NoteOff ||
+                       (opcode == muse::midi::Event::Opcode::NoteOn && event.velocity7() == 0)) {
+                bufferNoteOff(event.note(), tick);
+            }
+        }
+        return; // Don't process events in the normal way during quantized recording
+    }
+
     const bool useDurationAndVelocity = isSoundPreview || configuration()->useMidiVelocityAndDurationDuringNoteInput();
 
     for (size_t i = 0; i < m_eventsQueue.size(); ++i) {
-        const muse::midi::Event& event = m_eventsQueue.at(i);
+        const muse::midi::Event& event = m_eventsQueue.at(i).event;
         const muse::midi::Event::Opcode opcode = event.opcode();
 
         if (opcode == muse::midi::Event::Opcode::ControlChange || opcode == muse::midi::Event::Opcode::PitchBend) {
@@ -224,8 +280,8 @@ void NotationMidiInput::startNoteInputIfNeed()
     }
 
     const auto containsNoteOn = [this]() -> bool {
-        return std::any_of(m_eventsQueue.begin(), m_eventsQueue.end(), [](const muse::midi::Event& e) {
-            return e.opcode() == muse::midi::Event::Opcode::NoteOn;
+        return std::any_of(m_eventsQueue.begin(), m_eventsQueue.end(), [](const TimestampedMidiEvent& te) {
+            return te.event.opcode() == muse::midi::Event::Opcode::NoteOn;
         });
     };
 
@@ -254,7 +310,8 @@ void NotationMidiInput::addNoteEventsToInputState()
 
     ControllerEventMap controllers;
 
-    for (const muse::midi::Event& event : m_eventsQueue) {
+    for (const TimestampedMidiEvent& timestampedEvent : m_eventsQueue) {
+        const muse::midi::Event& event = timestampedEvent.event;
         const muse::midi::Event::Opcode opcode = event.opcode();
 
         if (opcode == muse::midi::Event::Opcode::NoteOn) {
@@ -554,4 +611,564 @@ bool NotationMidiInput::isInputByDuration() const
 bool NotationMidiInput::isNoteInputMode() const
 {
     return m_notationInteraction->noteInput()->isNoteInputMode();
+}
+
+bool NotationMidiInput::isRealtimeQuantized() const
+{
+    return noteInputMethod() == NoteInputMethod::REALTIME_QUANTIZED;
+}
+
+INotationNoteInputPtr NotationMidiInput::noteInput() const
+{
+    return m_notationInteraction->noteInput();
+}
+
+void NotationMidiInput::setNotationPlayback(INotationPlaybackPtr playback)
+{
+    m_notationPlayback = playback;
+}
+
+INotationPlaybackPtr NotationMidiInput::notationPlayback() const
+{
+    return m_notationPlayback;
+}
+
+void NotationMidiInput::startQuantizedRecording()
+{
+    if (m_isQuantizedRecording) {
+        return;
+    }
+
+    INotationNoteInputPtr ni = noteInput();
+    if (!ni) {
+        return;
+    }
+
+    // Ensure we're in note input mode with REALTIME_QUANTIZED
+    if (!ni->isNoteInputMode()) {
+        ni->startNoteInput(NoteInputMethod::REALTIME_QUANTIZED);
+    } else if (!ni->usingNoteInputMethod(NoteInputMethod::REALTIME_QUANTIZED)) {
+        ni->setNoteInputMethod(NoteInputMethod::REALTIME_QUANTIZED);
+    }
+
+    // Get tempo - use recording tempo if set, otherwise score tempo
+    int recordingTempoBpm = configuration()->recordingTempo();
+    double tempoBPS;
+
+    mu::engraving::Score* sc = score();
+    if (!sc) {
+        return;
+    }
+
+    const NoteInputState& inputState = ni->state();
+    if (!inputState.segment()) {
+        return;
+    }
+
+    int currentTick = inputState.segment()->tick().ticks();
+
+    if (recordingTempoBpm > 0) {
+        tempoBPS = recordingTempoBpm / 60.0;
+    } else {
+        // Get tempo from score at current position
+        tempoBPS = sc->tempomap()->multipliedTempo(currentTick).val;
+    }
+
+    // Get time signature info - use TimeSigFrac's built-in methods
+    engraving::TimeSigFrac timeSig = sc->sigmap()->timesig(engraving::Fraction::fromTicks(currentTick)).nominal();
+    int ticksPerBeat = timeSig.beatTicks();
+    int beatsPerMeasure = timeSig.beatsPerMeasure();
+
+    m_isQuantizedRecording = true;
+    m_pendingNotes.clear();
+    m_currentRecordingBeat = 0;
+    m_lastQuantizedNoteEndTick = currentTick;
+
+    // Enable metronome if not already enabled (same as existing real-time modes)
+    enableMetronome();
+
+    // Use the existing count-in infrastructure for proper timing
+    muse::secs_t countInDurationSecs = 0;
+    if (m_notationPlayback) {
+        m_notationPlayback->triggerCountIn(currentTick, countInDurationSecs);
+    }
+
+    // Convert seconds to milliseconds for the timer
+    int countInDurationMs = static_cast<int>(countInDurationSecs * 1000.0);
+    if (countInDurationMs <= 0) {
+        // Fallback: calculate manually if triggerCountIn doesn't return duration
+        int countInBeats = beatsPerMeasure;
+        countInDurationMs = static_cast<int>(countInBeats * 1000.0 / tempoBPS);
+    }
+
+    LOGD() << "startQuantizedRecording: countInDuration=" << countInDurationMs << "ms"
+           << " tempoBPS=" << tempoBPS << " ticksPerBeat=" << ticksPerBeat;
+
+    // After count-in, start actual recording
+    QTimer::singleShot(countInDurationMs, [this, currentTick, tempoBPS, ticksPerBeat, beatsPerMeasure]() {
+        if (m_isQuantizedRecording) {
+            m_recordingClock->start(currentTick, tempoBPS, ticksPerBeat, beatsPerMeasure);
+            LOGD() << "Recording clock started at tick=" << currentTick;
+        }
+    });
+}
+
+void NotationMidiInput::stopQuantizedRecording()
+{
+    if (!m_isQuantizedRecording) {
+        return;
+    }
+
+    LOGD() << "stopQuantizedRecording called";
+
+    // Stop the clock first (this makes isRunning() return false)
+    if (m_recordingClock && m_recordingClock->isRunning()) {
+        m_recordingClock->stop();
+    }
+
+    // Finalize any pending notes
+    finalizeRecording();
+
+    // Clear all buffers to ensure clean state
+    m_pendingNotes.clear();
+    m_recordedNotes.clear();
+    m_keyboardNoteBuffer.clear();
+    m_heldKeyboardPitches.clear();
+
+    m_isQuantizedRecording = false;
+    m_currentBeatChanged.send(-1); // Signal recording stopped
+
+    // Disable metronome if we enabled it
+    disableMetronome();
+
+    LOGD() << "stopQuantizedRecording complete";
+}
+
+bool NotationMidiInput::isQuantizedRecording() const
+{
+    return m_isQuantizedRecording;
+}
+
+muse::async::Channel<int> NotationMidiInput::currentBeatChanged() const
+{
+    return m_currentBeatChanged;
+}
+
+void NotationMidiInput::onRecordingMetronomeClick(int tick)
+{
+    playbackController()->playMetronome(tick);
+}
+
+void NotationMidiInput::onRecordingBeatChanged(int beat)
+{
+    m_currentRecordingBeat = beat;
+    m_currentBeatChanged.send(beat);
+}
+
+void NotationMidiInput::bufferNoteOn(int pitch, int velocity, int tickTimestamp)
+{
+    LOGD() << "bufferNoteOn: pitch=" << pitch << " velocity=" << velocity
+           << " tickTimestamp=" << tickTimestamp;
+
+    // Check if this pitch is already pending (shouldn't happen, but safety)
+    auto it = std::find_if(m_pendingNotes.begin(), m_pendingNotes.end(),
+                           [pitch](const PendingNote& n) { return n.pitch == pitch; });
+
+    if (it != m_pendingNotes.end()) {
+        // Note already pending - end the previous one first
+        bufferNoteOff(pitch, tickTimestamp);
+    }
+
+    // Add to pending notes (waiting for note-off)
+    m_pendingNotes.push_back({ pitch, velocity, tickTimestamp });
+
+    // NOTE: Audio preview is now handled at the entry points (onMidiEventReceived/processKeyboardNoteOn)
+    // for immediate feedback - no longer called here to avoid double-triggering
+}
+
+void NotationMidiInput::bufferNoteOff(int pitch, int tickTimestamp)
+{
+    LOGD() << "bufferNoteOff: pitch=" << pitch << " tickTimestamp=" << tickTimestamp;
+
+    // Find the pending note
+    auto it = std::find_if(m_pendingNotes.begin(), m_pendingNotes.end(),
+                           [pitch](const PendingNote& n) { return n.pitch == pitch; });
+
+    if (it == m_pendingNotes.end()) {
+        return; // No pending note for this pitch
+    }
+
+    PendingNote pending = *it;
+    m_pendingNotes.erase(it);
+
+    // Add to recorded notes buffer (will be written to score when recording stops)
+    m_recordedNotes.push_back({ pending.pitch, pending.velocity, pending.startTick, tickTimestamp });
+
+    LOGD() << "Note buffered: pitch=" << pending.pitch
+           << " startTick=" << pending.startTick
+           << " endTick=" << tickTimestamp;
+
+    // NOTE: Audio preview off is now handled at the entry points (onMidiEventReceived/processKeyboardNoteOff)
+    // for immediate feedback - no longer called here to avoid double-triggering
+}
+
+void NotationMidiInput::playNotePreview(int pitch, int velocity, bool noteOn)
+{
+    // Create a temporary note for audio preview
+    mu::engraving::Score* sc = score();
+    if (!sc) {
+        return;
+    }
+
+    const mu::engraving::InputState& inputState = sc->inputState();
+    Segment* seg = inputState.lastSegment() ? inputState.lastSegment() : sc->dummy()->segment();
+
+    if (!seg) {
+        return;
+    }
+
+    // Create a temporary chord and note for playback
+    Chord* chord = engraving::Factory::createChord(seg);
+    chord->setParent(seg);
+
+    const ChordRest* cr = inputState.cr();
+    const mu::engraving::staff_idx_t staffIdx = cr ? engraving::track2staff(cr->track()) : 0;
+
+    Note* note = engraving::Factory::createNote(chord);
+    note->setParent(chord);
+    note->setStaffIdx(staffIdx);
+
+    engraving::NoteVal nval = sc->noteVal(pitch, staffIdx, configuration()->midiUseWrittenPitch().val);
+    note->setNval(nval);
+
+    if (noteOn) {
+        note->setUserVelocity(velocity);
+        std::vector<const EngravingItem*> elements = { note };
+        playback::IPlaybackController::PlayParams params;
+        params.flushSound = false; // Don't flush - we want the note to sustain
+        playbackController()->playElements(elements, params, true);
+    } else {
+        // Note off - flush sound to stop the note
+        playback::IPlaybackController::PlayParams params;
+        params.flushSound = true;
+        playbackController()->playElements({}, params, true);
+    }
+
+    // Clean up temporary objects
+    delete chord; // This also deletes the note since it's parented to chord
+}
+
+void NotationMidiInput::finalizeRecording()
+{
+    // End any notes still being held
+    if (!m_recordingClock) {
+        return;
+    }
+
+    int endTick = m_recordingClock->currentTick();
+
+    // Buffer any still-held notes with the current end time
+    for (const auto& pending : m_pendingNotes) {
+        m_recordedNotes.push_back({ pending.pitch, pending.velocity, pending.startTick, endTick });
+    }
+    m_pendingNotes.clear();
+
+    // Now write all buffered notes to the score with quantization
+    writeBufferedNotesToScore();
+}
+
+void NotationMidiInput::writeBufferedNotesToScore()
+{
+    if (m_recordedNotes.empty()) {
+        LOGD() << "writeBufferedNotesToScore: no notes to write";
+        return;
+    }
+
+    if (!m_recordingClock) {
+        LOGW() << "writeBufferedNotesToScore: no recording clock";
+        m_recordedNotes.clear();
+        return;
+    }
+
+    LOGD() << "writeBufferedNotesToScore: writing " << m_recordedNotes.size() << " notes";
+
+    // Get quantization parameters
+    int ticksPerBeat = m_recordingClock->ticksPerBeat();
+    int ticksPerGrid = NoteQuantizer::gridToTicks(configuration()->quantizationGrid(), ticksPerBeat);
+
+    // Sort notes by start time
+    std::sort(m_recordedNotes.begin(), m_recordedNotes.end(),
+              [](const RecordedNote& a, const RecordedNote& b) {
+                  return a.startTick < b.startTick;
+              });
+
+    // Write each note to the score
+    for (const auto& recorded : m_recordedNotes) {
+        // Quantize the start position (round to nearest)
+        int quantizedStartTick = NoteQuantizer::quantizePosition(recorded.startTick, ticksPerGrid);
+
+        // Calculate quantized duration
+        engraving::Fraction duration = NoteQuantizer::calculateDuration(
+            recorded.startTick, recorded.endTick, ticksPerBeat, ticksPerGrid);
+
+        LOGD() << "Writing note: pitch=" << recorded.pitch
+               << " rawStart=" << recorded.startTick << " quantizedStart=" << quantizedStartTick
+               << " rawEnd=" << recorded.endTick << " duration=" << duration.toString();
+
+        // Create the note in the score
+        createQuantizedNote(recorded.pitch, recorded.velocity, quantizedStartTick, duration);
+    }
+
+    m_recordedNotes.clear();
+}
+
+void NotationMidiInput::createQuantizedNote(int pitch, int velocity, int startTick,
+                                            const engraving::Fraction& duration)
+{
+    INotationNoteInputPtr ni = noteInput();
+    if (!ni) {
+        return;
+    }
+
+    mu::engraving::Score* sc = score();
+    if (!sc) {
+        return;
+    }
+
+    const NoteInputState& inputState = ni->state();
+    if (!inputState.segment()) {
+        return;
+    }
+
+    // Get current input position
+    int currentTick = inputState.segment()->tick().ticks();
+
+    // Insert rests to fill gap from current position to start of this note
+    if (startTick > currentTick) {
+        insertRestsToFillGap(currentTick, startTick);
+    }
+
+    // Set up the note value
+    engraving::NoteVal nval;
+    nval.pitch = pitch;
+
+    // Set velocity if configured to use it
+    if (configuration()->useMidiVelocityAndDurationDuringNoteInput()) {
+        nval.velocityOverride = velocity;
+    }
+
+    // Get track from input state
+    engraving::track_idx_t track = inputState.track();
+
+    // Get the segment at startTick (or create one)
+    engraving::Segment* seg = sc->tick2segment(engraving::Fraction::fromTicks(startTick),
+                                                true, engraving::SegmentType::ChordRest);
+    if (!seg) {
+        // Try to find the measure and get appropriate segment
+        engraving::Measure* measure = sc->tick2measure(engraving::Fraction::fromTicks(startTick));
+        if (!measure) {
+            LOGW() << "Cannot find measure at tick " << startTick;
+            return;
+        }
+        seg = measure->getSegment(engraving::SegmentType::ChordRest,
+                                   engraving::Fraction::fromTicks(startTick));
+    }
+
+    if (!seg) {
+        LOGW() << "Cannot create segment at tick " << startTick;
+        return;
+    }
+
+    // Prepare the undo operation
+    m_undoStack->prepareChanges(muse::TranslatableString("undoableAction", "Record note"));
+
+    // Create the note using the score's setNoteRest
+    engraving::Segment* resultSeg = sc->setNoteRest(seg, track, nval, duration);
+
+    m_undoStack->commitChanges();
+
+    // Update the last note end position
+    m_lastQuantizedNoteEndTick = startTick + duration.ticks();
+
+    // Move input position to after the note
+    if (resultSeg) {
+        // Find next segment for input
+        engraving::Segment* nextSeg = resultSeg->next(engraving::SegmentType::ChordRest);
+        if (nextSeg) {
+            sc->inputState().setSegment(nextSeg);
+        }
+    }
+
+    // Notify about state change
+    m_notationInteraction->noteInput()->stateChanged().notify();
+
+    LOGD() << "Created quantized note: pitch=" << pitch << " startTick=" << startTick
+           << " duration=" << duration.toString();
+}
+
+void NotationMidiInput::insertRestsToFillGap(int fromTick, int toTick)
+{
+    if (toTick <= fromTick) {
+        return;
+    }
+
+    INotationNoteInputPtr ni = noteInput();
+    if (!ni) {
+        return;
+    }
+
+    mu::engraving::Score* sc = score();
+    if (!sc) {
+        return;
+    }
+
+    const NoteInputState& inputState = ni->state();
+    engraving::track_idx_t track = inputState.track();
+
+    // Calculate the gap duration
+    engraving::Fraction gapDuration = engraving::Fraction::fromTicks(toTick - fromTick);
+
+    // Get or create segment at fromTick
+    engraving::Segment* seg = sc->tick2segment(engraving::Fraction::fromTicks(fromTick),
+                                                true, engraving::SegmentType::ChordRest);
+    if (!seg) {
+        engraving::Measure* measure = sc->tick2measure(engraving::Fraction::fromTicks(fromTick));
+        if (!measure) {
+            return;
+        }
+        seg = measure->getSegment(engraving::SegmentType::ChordRest,
+                                   engraving::Fraction::fromTicks(fromTick));
+    }
+
+    if (!seg) {
+        return;
+    }
+
+    // Prepare the undo operation
+    m_undoStack->prepareChanges(muse::TranslatableString("undoableAction", "Insert rest"));
+
+    // Create rest using setNoteRest with pitch -1 (rest)
+    engraving::NoteVal restVal;
+    restVal.pitch = -1; // -1 indicates rest
+
+    sc->setNoteRest(seg, track, restVal, gapDuration);
+
+    m_undoStack->commitChanges();
+
+    LOGD() << "Inserted rest: fromTick=" << fromTick << " toTick=" << toTick
+           << " duration=" << gapDuration.toString();
+}
+
+void NotationMidiInput::processKeyboardNoteOn(int pitch, int velocity)
+{
+    if (!m_isQuantizedRecording || !m_recordingClock || !m_recordingClock->isRunning()) {
+        return;
+    }
+
+    // Filter out key repeat events - if this pitch is already held, ignore
+    if (m_heldKeyboardPitches.count(pitch) > 0) {
+        LOGD() << "Ignoring key repeat for pitch=" << pitch;
+        return;
+    }
+
+    // NOTE: Audio preview during quantized recording is intentionally disabled.
+    // MuseScore's audio pipeline has ~30-50ms latency which makes real-time
+    // monitoring unusable for recording. Users should use external MIDI monitoring
+    // for low-latency audio feedback during recording.
+
+    // Capture tick timestamp NOW when key is first pressed
+    int tickTimestamp = m_recordingClock->currentTick();
+
+    // Monophonic behavior: auto-release any currently held note when a new key is pressed
+    // This allows overlapping keypresses where the user hits the next note before releasing the previous
+    if (!m_heldKeyboardPitches.empty()) {
+        // Release all currently held notes at this timestamp
+        for (int heldPitch : m_heldKeyboardPitches) {
+            LOGD() << "Auto-releasing held pitch=" << heldPitch << " due to new keypress";
+            bufferNoteOff(heldPitch, tickTimestamp);
+        }
+        m_heldKeyboardPitches.clear();
+    }
+
+    // Mark this pitch as held
+    m_heldKeyboardPitches.insert(pitch);
+
+    LOGD() << "processKeyboardNoteOn: pitch=" << pitch << " velocity=" << velocity
+           << " tickTimestamp=" << tickTimestamp << " elapsedMs=" << m_recordingClock->elapsedMs();
+
+    // For keyboard input, buffer immediately (single notes only, no chord detection)
+    bufferNoteOn(pitch, velocity, tickTimestamp);
+}
+
+void NotationMidiInput::processKeyboardNoteOff(int pitch)
+{
+    if (!m_isQuantizedRecording || !m_recordingClock || !m_recordingClock->isRunning()) {
+        return;
+    }
+
+    // Clear the held state for this pitch
+    m_heldKeyboardPitches.erase(pitch);
+
+    int tick = m_recordingClock->currentTick();
+    LOGD() << "processKeyboardNoteOff: pitch=" << pitch << " tickTimestamp=" << tick
+           << " elapsedMs=" << m_recordingClock->elapsedMs();
+    bufferNoteOff(pitch, tick);
+}
+
+void NotationMidiInput::processKeyboardNoteOffByLetter(int noteLetter)
+{
+    if (!m_isQuantizedRecording || !m_recordingClock || !m_recordingClock->isRunning()) {
+        return;
+    }
+
+    // Find pending note matching this letter (regardless of octave)
+    // Note letters: 0=C, 1=D, 2=E, 3=F, 4=G, 5=A, 6=B
+    static const int pitchToLetter[12] = { 0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6 };
+
+    int tick = m_recordingClock->currentTick();
+
+    // Find the pitch first, then call processQuantizedNoteOff outside the loop
+    // (to avoid modifying the vector while iterating)
+    int foundPitch = -1;
+    for (const auto& pending : m_pendingNotes) {
+        int pendingLetter = pitchToLetter[pending.pitch % 12];
+        if (pendingLetter == noteLetter) {
+            foundPitch = pending.pitch;
+            break;
+        }
+    }
+
+    if (foundPitch >= 0) {
+        // Clear the held state for this pitch
+        m_heldKeyboardPitches.erase(foundPitch);
+
+        LOGD() << "processKeyboardNoteOffByLetter: letter=" << noteLetter << " pitch=" << foundPitch
+               << " tickTimestamp=" << tick << " elapsedMs=" << m_recordingClock->elapsedMs();
+        bufferNoteOff(foundPitch, tick);
+    }
+}
+
+void NotationMidiInput::processKeyboardChordBuffer()
+{
+    if (m_keyboardNoteBuffer.empty()) {
+        return;
+    }
+
+    if (!m_recordingClock || !m_recordingClock->isRunning()) {
+        m_keyboardNoteBuffer.clear();
+        return;
+    }
+
+    // All notes in buffer are treated as a chord - use the earliest timestamp
+    // (they should all be very close, but use the first one for consistency)
+    int chordTick = m_keyboardNoteBuffer.front().tickTimestamp;
+
+    LOGD() << "processKeyboardChordBuffer: " << m_keyboardNoteBuffer.size() << " notes, chordTick=" << chordTick;
+
+    for (const auto& entry : m_keyboardNoteBuffer) {
+        // Use the stored timestamp from when the key was pressed, not current time
+        bufferNoteOn(entry.pitch, entry.velocity, entry.tickTimestamp);
+    }
+
+    m_keyboardNoteBuffer.clear();
 }

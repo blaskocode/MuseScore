@@ -2161,6 +2161,13 @@ const UiActionList NotationUiActions::s_actions = {
              TranslatableString("action", "Toggle note input mode: real-time (foot pedal)"),
              IconCode::Code::FOOT_PEDAL
              ),
+    UiAction("note-input-realtime-quantized",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_OPENED,
+             TranslatableString("action", "Real-time (quantized)"),
+             TranslatableString("action", "Toggle note input mode: real-time (quantized)"),
+             IconCode::Code::METRONOME
+             ),
     UiAction("note-input-timewise",
              mu::context::UiCtxProjectOpened,
              mu::context::CTX_NOTATION_OPENED,
@@ -2173,6 +2180,13 @@ const UiActionList NotationUiActions::s_actions = {
              mu::context::CTX_NOTATION_OPENED,
              TranslatableString("action", "Real-time advance"),
              TranslatableString("action", "Real-time advance"),
+             IconCode::Code::METRONOME
+             ),
+    UiAction("toggle-quantized-recording",
+             mu::context::UiCtxProjectOpened,
+             mu::context::CTX_NOTATION_OPENED,
+             TranslatableString("action", "Toggle quantized recording"),
+             TranslatableString("action", "Start or stop quantized MIDI recording"),
              IconCode::Code::METRONOME
              ),
     UiAction("note-longa",
@@ -3034,6 +3048,7 @@ const muse::ui::ToolConfig& NotationUiActions::defaultNoteInputBarConfig()
             { "note-input-repitch", false },
             { "note-input-realtime-auto", false },
             { "note-input-realtime-manual", false },
+            { "note-input-realtime-quantized", false },
             { "note-input-timewise", false },
             { "", true },
             { "pad-note-1024", false },

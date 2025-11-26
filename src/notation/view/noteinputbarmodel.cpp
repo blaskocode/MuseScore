@@ -46,6 +46,7 @@ static const std::unordered_map<ActionCode, NoteInputMethod> NOTE_INPUT_METHOD_A
     { "note-input-repitch", NoteInputMethod::REPITCH },
     { "note-input-realtime-auto", NoteInputMethod::REALTIME_AUTO },
     { "note-input-realtime-manual", NoteInputMethod::REALTIME_MANUAL },
+    { "note-input-realtime-quantized", NoteInputMethod::REALTIME_QUANTIZED },
     { "note-input-timewise", NoteInputMethod::TIMEWISE },
 };
 

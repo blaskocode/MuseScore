@@ -23,11 +23,16 @@
 #define MU_NOTATION_INOTATIONMIDIINPUT_H
 
 #include "async/notification.h"
+#include "async/channel.h"
 #include "midi/miditypes.h"
 
 #include "notationtypes.h"
 
 namespace mu::notation {
+
+class INotationPlayback;
+using INotationPlaybackPtr = std::shared_ptr<INotationPlayback>;
+
 class INotationMidiInput
 {
 public:
@@ -37,6 +42,19 @@ public:
     virtual muse::async::Channel<std::vector<const Note*> > notesReceived() const = 0;
 
     virtual void onRealtimeAdvance() = 0;
+
+    // Quantized recording methods
+    virtual void startQuantizedRecording() = 0;
+    virtual void stopQuantizedRecording() = 0;
+    virtual bool isQuantizedRecording() const = 0;
+    virtual muse::async::Channel<int> currentBeatChanged() const = 0;
+
+    // Keyboard note processing for quantized recording
+    virtual void processKeyboardNoteOn(int pitch, int velocity) = 0;
+    virtual void processKeyboardNoteOff(int pitch) = 0;
+
+    // Playback connection for metronome
+    virtual void setNotationPlayback(INotationPlaybackPtr playback) = 0;
 };
 
 using INotationMidiInputPtr = std::shared_ptr<INotationMidiInput>;

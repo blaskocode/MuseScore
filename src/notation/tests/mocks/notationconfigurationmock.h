@@ -206,6 +206,14 @@ public:
     MOCK_METHOD(void, setNotePlayDurationMilliseconds, (int), (override));
     MOCK_METHOD((muse::async::Channel<int>), notePlayDurationMillisecondsChanged, (), (const, override));
 
+    MOCK_METHOD(QuantizationGrid, quantizationGrid, (), (const, override));
+    MOCK_METHOD(void, setQuantizationGrid, (QuantizationGrid), (override));
+    MOCK_METHOD((muse::async::Channel<QuantizationGrid>), quantizationGridChanged, (), (const, override));
+
+    MOCK_METHOD(int, recordingTempo, (), (const, override));
+    MOCK_METHOD(void, setRecordingTempo, (int), (override));
+    MOCK_METHOD((muse::async::Channel<int>), recordingTempoChanged, (), (const, override));
+
     MOCK_METHOD(void, setTemplateModeEnabled, (std::optional<bool>), (override));
     MOCK_METHOD(void, setTestModeEnabled, (std::optional<bool>), (override));
 

@@ -144,6 +144,10 @@ void MasterNotation::initAfterSettingScore(const MasterScore* score)
     });
 
     m_notationPlayback->init();
+
+    // Connect playback to MIDI input for metronome during quantized recording
+    midiInput()->setNotationPlayback(m_notationPlayback);
+
     initExcerptNotations(score->excerpts());
 }
 

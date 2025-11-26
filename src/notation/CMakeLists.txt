@@ -112,6 +112,10 @@ set(MODULE_SRC
     ${CMAKE_CURRENT_LIST_DIR}/internal/midiinputoutputcontroller.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/notationmidiinput.cpp
     ${CMAKE_CURRENT_LIST_DIR}/internal/notationmidiinput.h
+    ${CMAKE_CURRENT_LIST_DIR}/internal/recordingclock.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/internal/recordingclock.h
+    ${CMAKE_CURRENT_LIST_DIR}/internal/notequantizer.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/internal/notequantizer.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/notationparts.cpp
     ${CMAKE_CURRENT_LIST_DIR}/internal/notationparts.h
     ${CMAKE_CURRENT_LIST_DIR}/internal/masternotationparts.cpp

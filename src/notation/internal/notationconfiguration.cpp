@@ -100,6 +100,9 @@ static const Settings::Key USE_MIDI_VELOCITY_AND_DURATION_DURING_NOTE_INPUT(modu
                                                                             "io/midi/useMidiVelocityAndDurationDuringNoteInput");
 static const Settings::Key NOTE_DEFAULT_PLAY_DURATION(module_name, "score/note/defaultPlayDuration");
 
+static const Settings::Key QUANTIZATION_GRID(module_name, "notation/noteInput/quantizationGrid");
+static const Settings::Key RECORDING_TEMPO(module_name, "notation/noteInput/recordingTempo");
+
 static const Settings::Key USER_INSTRUMENTS_PATH(module_name, "application/paths/userInstruments");
 
 static const Settings::Key IS_SNAPPED_TO_VERTICAL_GRID_KEY(module_name,  "ui/application/raster/isSnappedToVerticalGrid");
@@ -133,6 +136,7 @@ static const std::map<NoteInputMethod, std::string> NOTE_INPUT_METHOD_TO_STR {
     { NoteInputMethod::RHYTHM, "RHYTHM" },
     { NoteInputMethod::REALTIME_AUTO, "REALTIME_AUTO" },
     { NoteInputMethod::REALTIME_MANUAL, "REALTIME_MANUAL" },
+    { NoteInputMethod::REALTIME_QUANTIZED, "REALTIME_QUANTIZED" },
     { NoteInputMethod::TIMEWISE, "TIMEWISE" },
 };
 
@@ -334,6 +338,16 @@ void NotationConfiguration::init()
     settings()->setDefaultValue(NOTE_DEFAULT_PLAY_DURATION, Val(500));
     settings()->valueChanged(NOTE_DEFAULT_PLAY_DURATION).onReceive(this, [this](const Val& val) {
         m_notePlayDurationMillisecondsChanged.send(val.toInt());
+    });
+
+    settings()->setDefaultValue(QUANTIZATION_GRID, Val(static_cast<int>(QuantizationGrid::EIGHTH)));
+    settings()->valueChanged(QUANTIZATION_GRID).onReceive(this, [this](const Val& val) {
+        m_quantizationGridChanged.send(static_cast<QuantizationGrid>(val.toInt()));
+    });
+
+    settings()->setDefaultValue(RECORDING_TEMPO, Val(0)); // 0 = use score tempo
+    settings()->valueChanged(RECORDING_TEMPO).onReceive(this, [this](const Val& val) {
+        m_recordingTempoChanged.send(val.toInt());
     });
 
     settings()->setDefaultValue(STYLE_FILE_IMPORT_PATH_KEY, Val(""));
@@ -1107,6 +1121,36 @@ void NotationConfiguration::setNotePlayDurationMilliseconds(int durationMs)
 async::Channel<int> NotationConfiguration::notePlayDurationMillisecondsChanged() const
 {
     return m_notePlayDurationMillisecondsChanged;
+}
+
+QuantizationGrid NotationConfiguration::quantizationGrid() const
+{
+    return static_cast<QuantizationGrid>(settings()->value(QUANTIZATION_GRID).toInt());
+}
+
+void NotationConfiguration::setQuantizationGrid(QuantizationGrid grid)
+{
+    settings()->setSharedValue(QUANTIZATION_GRID, Val(static_cast<int>(grid)));
+}
+
+async::Channel<QuantizationGrid> NotationConfiguration::quantizationGridChanged() const
+{
+    return m_quantizationGridChanged;
+}
+
+int NotationConfiguration::recordingTempo() const
+{
+    return settings()->value(RECORDING_TEMPO).toInt();
+}
+
+void NotationConfiguration::setRecordingTempo(int bpm)
+{
+    settings()->setSharedValue(RECORDING_TEMPO, Val(bpm));
+}
+
+async::Channel<int> NotationConfiguration::recordingTempoChanged() const
+{
+    return m_recordingTempoChanged;
 }
 
 void NotationConfiguration::setTemplateModeEnabled(std::optional<bool> enabled)

@@ -36,6 +36,8 @@
 #include "engraving/dom/drumset.h"
 #include "engraving/dom/shadownote.h"
 
+#include "notation/internal/notationmidiinput.h"
+
 #include "defer.h"
 
 using namespace mu;
@@ -1406,6 +1408,32 @@ void NotationViewInputController::keyPressEvent(QKeyEvent* event)
 
 void NotationViewInputController::keyReleaseEvent(QKeyEvent* event)
 {
+    // Handle note key releases during quantized recording
+    auto notation = currentNotation();
+    if (notation) {
+        auto midiInputPtr = notation->midiInput();
+        // Cast to internal type to access processKeyboardNoteOffByLetter
+        auto* midiInput = dynamic_cast<mu::notation::NotationMidiInput*>(midiInputPtr.get());
+        if (midiInput && midiInput->isQuantizedRecording()) {
+            // Map key to note letter (0=C, 1=D, 2=E, 3=F, 4=G, 5=A, 6=B)
+            static const std::map<int, int> keyToNoteLetter = {
+                { Qt::Key_C, 0 },   // C
+                { Qt::Key_D, 1 },   // D
+                { Qt::Key_E, 2 },   // E
+                { Qt::Key_F, 3 },   // F
+                { Qt::Key_G, 4 },   // G
+                { Qt::Key_A, 5 },   // A
+                { Qt::Key_B, 6 }    // B
+            };
+
+            auto it = keyToNoteLetter.find(event->key());
+            if (it != keyToNoteLetter.end()) {
+                midiInput->processKeyboardNoteOffByLetter(it->second);
+                return;
+            }
+        }
+    }
+
     if (event->key() != Qt::Key_Shift) {
         return;
     }

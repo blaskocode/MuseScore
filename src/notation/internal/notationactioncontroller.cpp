@@ -97,9 +97,11 @@ void NotationActionController::init()
     registerNoteInputAction("note-input-repitch", NoteInputMethod::REPITCH);
     registerNoteInputAction("note-input-realtime-auto", NoteInputMethod::REALTIME_AUTO);
     registerNoteInputAction("note-input-realtime-manual", NoteInputMethod::REALTIME_MANUAL);
+    registerNoteInputAction("note-input-realtime-quantized", NoteInputMethod::REALTIME_QUANTIZED);
     registerNoteInputAction("note-input-timewise", NoteInputMethod::TIMEWISE);
 
     registerAction("realtime-advance", &Controller::realtimeAdvance, &Controller::isNoteInputMode);
+    registerAction("toggle-quantized-recording", &Controller::toggleQuantizedRecording, &Controller::isNoteInputMode);
 
     registerPadNoteAction("note-longa", Pad::NOTE00);
     registerPadNoteAction("note-breve", Pad::NOTE0);
@@ -780,6 +782,20 @@ void NotationActionController::handleNoteAction(NoteName note, NoteAddingMode ad
         return;
     }
 
+    // Check if we're in quantized recording mode - route keyboard notes to midi input
+    INotationMidiInputPtr midiInput = currentNotationMidiInput();
+    if (midiInput && midiInput->isQuantizedRecording()) {
+        // Convert step to MIDI pitch
+        // step = octave * 7 + noteInOctave, where noteInOctave is 0-6 (C-B)
+        static const int stepToPitch[7] = { 0, 2, 4, 5, 7, 9, 11 }; // C, D, E, F, G, A, B
+        int octave = params.step / 7;
+        int noteInOctave = params.step % 7;
+        int pitch = stepToPitch[noteInOctave] + octave * 12;
+
+        midiInput->processKeyboardNoteOn(pitch, 80); // Default velocity 80 for keyboard
+        return;
+    }
+
     handleNoteAction(ActionData::make_arg2<NoteInputParams, NoteAddingMode>(params, addingMode));
 }
 
@@ -1056,6 +1072,22 @@ void NotationActionController::realtimeAdvance()
     }
 
     midiInput->onRealtimeAdvance();
+}
+
+void NotationActionController::toggleQuantizedRecording()
+{
+    TRACEFUNC;
+
+    INotationMidiInputPtr midiInput = currentNotationMidiInput();
+    if (!midiInput) {
+        return;
+    }
+
+    if (midiInput->isQuantizedRecording()) {
+        midiInput->stopQuantizedRecording();
+    } else {
+        midiInput->startQuantizedRecording();
+    }
 }
 
 bool NotationActionController::moveSelectionAvailable(MoveSelectionType type) const
